@@ -13,7 +13,7 @@ from ..utils.constants import TIME_PERIOD_DESCRIPTIONS
 class CSVSplitter:
     """CSV 拆分核心类"""
 
-    def __init__(self, max_rows=None, output_dir='./split_data', encoding='auto'):
+    def __init__(self, max_rows=None, output_dir='./split_data', encoding='auto', progress_callback=None):
         """
         初始化拆分器
 
@@ -23,16 +23,38 @@ class CSVSplitter:
                 - 整数: 按指定行数拆分
             output_dir: 输出目录
             encoding: 文件编码 ('auto' 表示自动检测)
+            progress_callback: 进度回调函数 (current, total, message) -> None
+                - None: 不使用回调（CLI模式，使用tqdm）
+                - 函数: GUI模式，通过回调发送进度更新
         """
         self.max_rows = max_rows
         self.output_dir = output_dir
         self.encoding = encoding
+        self.progress_callback = progress_callback
+        self._reset_stats()
+
+    def _reset_stats(self):
+        """重置统计信息"""
         self.stats = {
             'total_files': 0,
             'total_rows': 0,
             'output_files': 0,
+            'output_file_list': [],  # 记录实际生成的文件列表 (file_name, row_count)
             'errors': [],
         }
+
+    def _emit_progress(self, current, total, message):
+        """
+        发送进度更新（兼容 CLI 和 GUI）
+
+        Args:
+            current: 当前进度值
+            total: 总值
+            message: 进度消息
+        """
+        if self.progress_callback:
+            self.progress_callback(current, total, message)
+        # CLI 模式：tqdm 会自动处理进度显示
 
     def _classify_fields(self, df, split_fields):
         """
@@ -84,6 +106,9 @@ class CSVSplitter:
             file_path = os.path.join(self.output_dir, file_name)
             FileUtils.write_csv(df, file_path)
             output_files.append((file_name, total_rows))
+            # 记录到统计
+            self.stats['output_file_list'].append((file_name, total_rows))
+            self.stats['output_files'] += 1
         else:
             # 需要按行数拆分
             num_parts = (total_rows // self.max_rows) + (1 if total_rows % self.max_rows > 0 else 0)
@@ -96,6 +121,9 @@ class CSVSplitter:
                 file_path = os.path.join(self.output_dir, file_name)
                 FileUtils.write_csv(part_df, file_path)
                 output_files.append((file_name, len(part_df)))
+                # 记录到统计
+                self.stats['output_file_list'].append((file_name, len(part_df)))
+                self.stats['output_files'] += 1
 
         return output_files
 
@@ -330,21 +358,85 @@ class CSVSplitter:
 
         return output_files
 
-    def split_single_file(self, file_path, split_fields, time_period='M'):
+    def split_by_rows_only(self, file_path):
+        """
+        只按行数拆分CSV文件（不按字段拆分）
+
+        Args:
+            file_path: 文件路径
+        """
+        print(f"\n{'=' * 60}")
+        print(f"处理文件: {file_path}")
+        print(f"{'=' * 60}")
+        print("  拆分模式: 按行数拆分")
+
+        # 发送进度：开始处理
+        self._emit_progress(0, 100, f"开始处理: {file_path}")
+
+        try:
+            # 读取文件
+            self._emit_progress(10, 100, "读取文件...")
+            df = FileUtils.read_csv_with_encoding(file_path, encoding=self.encoding, low_memory=False)
+            total_rows = len(df)
+            print(f"  总行数: {total_rows:,}")
+            print(f"  字段数: {len(df.columns)}")
+
+            # 必须设置 max_rows
+            if self.max_rows is None:
+                print("  ❌ 错误: 按行数拆分模式必须设置 max_rows 参数")
+                self._emit_progress(100, 100, "处理失败：未设置 max_rows")
+                return
+
+            print(f"  行数拆分: ✅ 单文件最大 {self.max_rows:,} 行")
+
+            self.stats['total_files'] += 1
+            self.stats['total_rows'] += total_rows
+
+            # 基础文件名
+            base_name = FileUtils.get_file_stem(file_path)
+
+            # 执行按行数拆分
+            self._emit_progress(30, 100, "开始拆分...")
+            print("\n  拆分策略: 按行数拆分（不进行字段分类）")
+
+            output_files = self._split_by_size(df, base_name, suffix='')
+
+            # 输出结果统计
+            self._emit_progress(90, 100, "完成拆分")
+            actual_output_count = len(self.stats['output_file_list'])
+            print(f"\n  ✅ 完成! 生成 {actual_output_count} 个文件:")
+            for file_name, rows in output_files:
+                print(f"     - {file_name} ({rows:,} 行)")
+
+            self._emit_progress(100, 100, f"完成! 生成 {actual_output_count} 个文件")
+
+        except Exception as e:
+            error_msg = f"处理文件 {file_path} 时出错: {str(e)}"
+            print(f"  ❌ {error_msg}")
+            self._emit_progress(100, 100, f"错误: {error_msg}")
+            self.stats['errors'].append(error_msg)
+            import traceback
+            traceback.print_exc()
+
+    def split_single_file(self, file_path, split_fields, time_period=None):
         """
         拆分单个CSV文件
 
         Args:
             file_path: 文件路径
             split_fields: 拆分字段列表
-            time_period: 时间周期 (Y/H/Q/M/HM/D)
+            time_period: 时间周期 (Y/H/Q/M/HM/D)，None 表示不使用时间周期拆分
         """
         print(f"\n{'=' * 60}")
         print(f"处理文件: {file_path}")
         print(f"{'=' * 60}")
 
+        # 发送进度：开始处理
+        self._emit_progress(0, 100, f"开始处理: {file_path}")
+
         try:
             # 读取文件
+            self._emit_progress(10, 100, "读取文件...")
             df = FileUtils.read_csv_with_encoding(file_path, encoding=self.encoding, low_memory=False)
             total_rows = len(df)
             print(f"  总行数: {total_rows:,}")
@@ -360,10 +452,12 @@ class CSVSplitter:
             self.stats['total_rows'] += total_rows
 
             # 分类字段
+            self._emit_progress(20, 100, "分析字段...")
             date_fields, non_date_fields = self._classify_fields(df, split_fields)
 
             if not date_fields and not non_date_fields:
                 print("  ❌ 错误: 没有有效的拆分字段")
+                self._emit_progress(100, 100, "处理失败：没有有效字段")
                 return
 
             # 基础文件名
@@ -371,13 +465,30 @@ class CSVSplitter:
             output_files = []
 
             # 执行拆分逻辑
+            self._emit_progress(30, 100, "开始拆分...")
+
+            # 输出时间周期设置信息
+            if time_period:
+                period_desc = TIME_PERIOD_DESCRIPTIONS.get(time_period, time_period)
+                print(f"  时间周期: {period_desc} ({time_period})")
+            else:
+                print("  时间周期: 未设置（日期字段将按唯一值拆分）")
+
             if len(non_date_fields) >= 2:
                 # 多个非日期字段：级联拆分
                 print(f"\n  拆分策略: 级联拆分 {len(non_date_fields)} 个字段: {non_date_fields}")
-                if date_fields:
+                if date_fields and time_period:
+                    # 有时间周期设置时，添加日期字段拆分
                     print(f"  附加时间字段: '{date_fields[0]}' ({TIME_PERIOD_DESCRIPTIONS.get(time_period, time_period)})")
                     output_files = self._split_multi_fields_with_date(
                         df, base_name, non_date_fields, date_fields[0], time_period
+                    )
+                elif date_fields and not time_period:
+                    # 无时间周期设置时，将日期字段当作普通字段级联拆分
+                    all_fields = non_date_fields + date_fields
+                    print(f"  附加字段: {date_fields}（按唯一值拆分）")
+                    output_files = self._split_multi_non_date_fields(
+                        df, base_name, all_fields
                     )
                 else:
                     output_files = self._split_multi_non_date_fields(
@@ -385,11 +496,19 @@ class CSVSplitter:
                     )
 
             elif non_date_fields and date_fields:
-                # 组合拆分：1个非日期字段 + 1个日期字段
-                print(f"\n  拆分策略: 按 '{non_date_fields[0]}' + '{date_fields[0]}' ({TIME_PERIOD_DESCRIPTIONS.get(time_period, time_period)})")
-                output_files = self._split_by_non_date_and_date(
-                    df, base_name, non_date_fields[0], date_fields[0], time_period
-                )
+                # 1个非日期字段 + 1个日期字段
+                if time_period:
+                    # 有时间周期设置：组合拆分
+                    print(f"\n  拆分策略: 按 '{non_date_fields[0]}' + '{date_fields[0]}' ({TIME_PERIOD_DESCRIPTIONS.get(time_period, time_period)})")
+                    output_files = self._split_by_non_date_and_date(
+                        df, base_name, non_date_fields[0], date_fields[0], time_period
+                    )
+                else:
+                    # 无时间周期设置：级联按唯一值拆分
+                    print(f"\n  拆分策略: 级联拆分 '{non_date_fields[0]}' + '{date_fields[0]}'（按唯一值）")
+                    output_files = self._split_multi_non_date_fields(
+                        df, base_name, [non_date_fields[0], date_fields[0]]
+                    )
 
             elif non_date_fields:
                 # 仅按非日期字段拆分
@@ -398,18 +517,28 @@ class CSVSplitter:
 
             elif date_fields:
                 # 仅按日期字段拆分
-                print(f"\n  拆分策略: 按 '{date_fields[0]}' ({TIME_PERIOD_DESCRIPTIONS.get(time_period, time_period)})")
-                output_files = self._split_by_date(df, base_name, date_fields[0], time_period)
+                if time_period:
+                    print(f"\n  拆分策略: 按 '{date_fields[0]}' ({TIME_PERIOD_DESCRIPTIONS.get(time_period, time_period)})")
+                    output_files = self._split_by_date(df, base_name, date_fields[0], time_period)
+                else:
+                    # 无时间周期设置，按日期唯一值拆分
+                    print(f"\n  拆分策略: 按 '{date_fields[0]}'（按唯一值）")
+                    output_files = self._split_by_non_date(df, base_name, date_fields[0])
 
             # 输出结果统计
-            print(f"\n  ✅ 完成! 生成 {len(output_files)} 个文件:")
+            self._emit_progress(90, 100, "完成拆分")
+            # 确保统计正确：使用实际生成的文件列表长度
+            actual_output_count = len(self.stats['output_file_list'])
+            print(f"\n  ✅ 完成! 生成 {actual_output_count} 个文件:")
             for file_name, rows in output_files:
                 print(f"     - {file_name} ({rows:,} 行)")
-                self.stats['output_files'] += 1
+
+            self._emit_progress(100, 100, f"完成! 生成 {actual_output_count} 个文件")
 
         except Exception as e:
             error_msg = f"处理文件 {file_path} 时出错: {str(e)}"
             print(f"  ❌ {error_msg}")
+            self._emit_progress(100, 100, f"错误: {error_msg}")
             self.stats['errors'].append(error_msg)
             import traceback
             traceback.print_exc()

@@ -9,7 +9,6 @@ from .utils import DateUtils, FileUtils
 from .utils.constants import (
     DEFAULT_MAX_ROWS,
     DEFAULT_OUTPUT_DIR,
-    DEFAULT_TIME_PERIOD,
     DEFAULT_ENCODING,
     TIME_PERIODS,
 )
@@ -20,7 +19,7 @@ class CLI:
 
     def split(self,
               input,
-              split_fields,
+              split_fields=None,
               time_period=None,
               max_rows=None,
               output=DEFAULT_OUTPUT_DIR,
@@ -32,15 +31,22 @@ class CLI:
         Args:
             input: 输入文件或文件夹路径
             split_fields: 拆分字段，多个字段用逗号分隔（如: "省份,订单日期"）
+                         None 表示只按行数拆分
             time_period: 时间周期 (Y=年, H=半年, Q=季度, M=月, HM=半月, D=日)
             max_rows: 单文件最大行数
-                     - None: 不按行数拆分
-                     - 整数: 按该值拆分
+                     - 按字段拆分模式: None=不拆分, 整数=二次拆分
+                     - 按行数拆分模式: 必须设置，默认500000
             output: 输出目录
             recursive: 是否递归处理子文件夹
             encoding: 文件编码 (auto/utf-8/gbk等)
 
         Examples:
+            # 只按行数拆分（默认50万行）
+            python csv_splitter.py split --input data.csv --max-rows 500000
+
+            # 只按行数拆分文件夹
+            python csv_splitter.py split --input ./data/ --max-rows 500000
+
             # 按省份拆分
             python csv_splitter.py split --input data.csv --split-fields "省份"
 
@@ -54,22 +60,29 @@ class CLI:
             python csv_splitter.py split --input ./data/ --split-fields "订单日期" --recursive
         """
         self._print_header()
-        self._print_config(input, split_fields, time_period, max_rows, output, recursive)
 
-        # 处理 max_rows 参数
-        actual_max_rows = self._parse_max_rows(max_rows)
+        # 判断拆分模式
+        is_rows_only_mode = split_fields is None
 
-        # 验证时间周期（仅在指定了时间周期时才验证）
-        # 空字符串或None表示不需要按时间周期拆分
-        if time_period and time_period.strip() and not DateUtils.validate_time_period(time_period):
-            print(f"❌ 错误: 无效的时间周期 '{time_period}'")
-            print(f"   支持的周期: {', '.join(TIME_PERIODS.keys())}")
-            print(f"   {', '.join([f'{k}={v}' for k, v in TIME_PERIODS.items()])}")
-            return
+        # 按行数拆分模式：必须设置 max_rows
+        if is_rows_only_mode:
+            actual_max_rows = self._parse_max_rows(max_rows) if max_rows is not None else DEFAULT_MAX_ROWS
+            self._print_config_rows_only(input, actual_max_rows, output, recursive)
+        else:
+            # 按字段拆分模式
+            actual_max_rows = self._parse_max_rows(max_rows)
+            self._print_config(input, split_fields, time_period, actual_max_rows, output, recursive)
 
-        # 解析字段
-        fields = self._parse_fields(split_fields)
-        print(f"解析后的字段: {fields}\n")
+            # 验证时间周期（仅在指定了时间周期时才验证）
+            if time_period and time_period.strip() and not DateUtils.validate_time_period(time_period):
+                print(f"❌ 错误: 无效的时间周期 '{time_period}'")
+                print(f"   支持的周期: {', '.join(TIME_PERIODS.keys())}")
+                print(f"   {', '.join([f'{k}={v}' for k, v in TIME_PERIODS.items()])}")
+                return
+
+            # 解析字段
+            fields = self._parse_fields(split_fields)
+            print(f"解析后的字段: {fields}\n")
 
         # 获取文件列表
         csv_files = FileUtils.get_csv_files(input, recursive)
@@ -89,8 +102,14 @@ class CLI:
             return
 
         # 处理每个文件
-        for csv_file in csv_files:
-            splitter.split_single_file(csv_file, fields, time_period)
+        if is_rows_only_mode:
+            # 只按行数拆分模式
+            for csv_file in csv_files:
+                splitter.split_by_rows_only(csv_file)
+        else:
+            # 按字段拆分模式
+            for csv_file in csv_files:
+                splitter.split_single_file(csv_file, fields, time_period)
 
         # 打印摘要
         splitter.print_summary()
@@ -148,7 +167,7 @@ class CLI:
         if time_period and time_period.strip():
             print(f"时间周期: {time_period} ({TIME_PERIODS.get(time_period, '未知')})")
         else:
-            print(f"时间周期:   (不需要)")
+            print("时间周期:   (不需要)")
 
         # 行数拆分策略
         if max_rows is None:
@@ -158,6 +177,15 @@ class CLI:
         else:
             print(f"行数拆分: ✅ 每 {int(max_rows):,} 行")
 
+        print(f"输出目录: {output}")
+        print(f"递归处理: {'是' if recursive else '否'}")
+        print(f"{'=' * 60}")
+
+    def _print_config_rows_only(self, input, max_rows, output, recursive):
+        """打印只按行数拆分的配置信息"""
+        print(f"输入路径: {input}")
+        print("拆分模式: 按行数拆分")
+        print(f"行数限制: ✅ 每 {max_rows:,} 行")
         print(f"输出目录: {output}")
         print(f"递归处理: {'是' if recursive else '否'}")
         print(f"{'=' * 60}")

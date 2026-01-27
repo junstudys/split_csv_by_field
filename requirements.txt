@@ -6,6 +6,9 @@ fire>=0.5.0
 tqdm>=4.65.0
 chardet>=5.0.0
 
+# GUI 依赖
+PyQt6>=6.6.0
+
 # 可选依赖
 # openpyxl>=3.0.0  # 支持 Excel 格式（未来版本）
 # xlrd>=2.0.0      # 读取旧版 Excel（未来版本）
